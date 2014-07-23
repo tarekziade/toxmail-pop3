@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 from toxpop import __version__
 
 
-install_requires = ['PyTox']
+install_requires = []
 
 try:
     import argparse     # NOQA

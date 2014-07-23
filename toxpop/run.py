@@ -5,12 +5,13 @@ import os
 import socket
 import sys
 import traceback
+import mailbox
+
 
 logging.basicConfig(format="%(name)s %(levelname)s - %(message)s")
 log = logging.getLogger("toxpop")
 log.setLevel(logging.INFO)
 
-from toxpop.toxclient import ToxClient
 
 
 class Connection(object):
@@ -47,31 +48,11 @@ class Connection(object):
         return "".join(data)
 
 
-class Message(object):
-    def __init__(self, filename):
-        msg = open(filename, "a+")
-        try:
-            self.data = data = msg.read()
-            self.size = len(data)
-            if data == '':
-                self.top, self.bot = '', ''
-            else:
-                self.top, bot = data.split("\r\n\r\n", 1)
-                self.bot = bot.split("\r\n")
-        finally:
-            msg.close()
-
 
 class Handler(object):
 
-    def __init__(self):
-        self.tox = ToxClient()
-
-    def start(self):
-        self.tox.start()
-
-    def stop(self):
-        self.tox.stop()
+    def __init__(self, maildir='mails'):
+        self.maildir = mailbox.Maildir(maildir)
 
     def USER(self, data):
         return "+OK user accepted"
@@ -80,20 +61,27 @@ class Handler(object):
         return "+OK pass accepted"
 
     def STAT(self, data):
-        num = len(self.tox.messages)
+        num = len(self.maildir)
         total = 0
-        for friend_id, msg in self.tox.messages:
-            total += len(msg)
+
+        for msg in self.maildir:
+            num += 1
+            total += len(str(msg))
 
         return "+OK %d %i" % (num, total)
 
+    def _get_sorted(self):
+        mails = [(key, msg) for key, msg in self.maildir.iteritems()]
+        mails.sort()
+        return mails
+
     def LIST(self, data):
-        num = len(self.tox.messages)
+        num = len(self.maildir)
         total = 0
         res = []
+        index = 0
 
-        for index, msg in enumerate(self.tox.messages):
-            friend_id, msg = msg
+        for key, msg in self._get_sorted():
             total += len(msg)
             res.append("%d %d" % (index+1, len(msg)))
 
@@ -110,14 +98,19 @@ class Handler(object):
         return "+OK top of message follows\r\n%s\r\n." % text
 
     def RETR(self, data):
-        log.info("message sent")
         index = int(data.split()[-1]) - 1
-        msg = self.tox.messages[index][-1]
+        __, msg = self._get_sorted()[index]
         return "+OK %i octets\r\n%s\r\n." % (len(msg), msg)
 
     def DELE(self, data):
         index = int(data.split()[-1]) - 1
-        self.tox.messages.pop(index)
+        key, __ = self._get_sorted()[index]
+        self.maildir.lock()
+        try:
+            self.maildir.remove(key)
+            self.maildir.flush()
+        finally:
+            self.maildir.unlock()
         return "+OK message %d deleted" % (index + 1)
 
     def NOOP(self, data):
@@ -127,9 +120,8 @@ class Handler(object):
         return "+OK toxpop POP3 server signing off"
 
 
-def serve(host, port):
-    handler = Handler()
-    handler.start()
+def serve(host, port, maildir):
+    handler = Handler(maildir)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((host, port))
@@ -172,22 +164,12 @@ def serve(host, port):
             sock.close()
         except Exception:
             pass
-        handler.stop()
 
 
 def main():
-    if len(sys.argv) != 2:
-        print "USAGE: [<host>:]<port>"
+    if len(sys.argv) != 3:
+        print "USAGE: port maildir"
     else:
-        _, port = sys.argv
-        if ":" in port:
-            host = port[:port.index(":")]
-            port = port[port.index(":") + 1:]
-        else:
-            host = ""
-        try:
-            port = int(port)
-        except Exception:
-            print "Unknown port:", port
-        else:
-            serve(host, port)
+        _, port, maildir = sys.argv
+        port = int(port)
+        serve('localhost', port, maildir)
